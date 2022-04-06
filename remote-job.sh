@@ -2,11 +2,11 @@
 ###
 # Trigger a Remote Jenkins Job with parameters and get console output as well as result
 # Usage:
-# remote-job.sh -u https://jenkins-url.com -j JOB_NAME -p "PARAM1=999" -p "PARAM2=123" -t BUILD_TOKEN
+# remote-job.sh -u https://jenkins-url.com -j JOB_NAME -p "PARAM1=999" -p "PARAM2=123" -a "username:token"
 # -u: url of jenkins host
 # -j: JOB_NAME on jenkins host
 # -p: parameter to pass in. Send multiple parameters by passing in multiple -p flags
-# -t: BUILD_TOKEN on remote machine to run job
+# -a: username and token to run job
 # -i: Tell curl to ignore cert validation
 ###
 
@@ -14,12 +14,12 @@
 [ -z "$BUILD_TIMEOUT_SECONDS" ] && BUILD_TIMEOUT_SECONDS=3600
 # Number of seconds between polling attempts
 [ -z "$POLL_INTERVAL" ] && POLL_INTERVAL=10
-while getopts j:p:t:u:i opt; do
+while getopts a:j:p:u:i opt; do
   case $opt in
     p) parameters+=("$OPTARG");;
-    t) parameters+=("token=$OPTARG");;
     j) JOB_NAME=$OPTARG;;
     u) JENKINS_URL=$OPTARG;;
+    a) JENKINS_AUTH="-u $OPTARG";;
     i) CURL_OPTS="-k" # tell curl to ignore cert validation
     #...
   esac
@@ -48,15 +48,15 @@ echo "PARAMS: $PARAMS"
 REMOTE_JOB_URL="$JENKINS_URL/job/$JOB_NAME/buildWithParameters?$PARAMS"
 echo "Calling REMOTE_JOB_URL: $REMOTE_JOB_URL"
 
-QUEUED_URL=$(curl -sSL $CURL_OPTS -D - $REMOTE_JOB_URL |\
+QUEUED_URL=$(curl -X POST -sSL $CURL_OPTS $JENKINS_AUTH -D - $REMOTE_JOB_URL |\
 perl -n -e '/^Location: (.*)$/ && print "$1\n"')
-[ -z "$QUEUED_URL" ] && { echo "No QUEUED_URL was found.  Did you remember to set a token (-t)?"; exit 1; }
+[ -z "$QUEUED_URL" ] && { echo "No QUEUED_URL was found.  Did you remember to set an authentication (-a)?"; exit 1; }
 
 # Remove extra \r at end, add /api/json path
 QUEUED_URL=${QUEUED_URL%$'\r'}api/json
 
 # Fetch the executable.url from the QUEUED url
-JOB_URL=`curl -sSL $QUEUED_URL | jq -r '.executable.url'`
+JOB_URL=`curl -sSL $CURL_OPTS $JENKINS_AUTH $QUEUED_URL | jq -r '.executable.url'`
 [ "$JOB_URL" = "null" ] && unset JOB_URL
 # Check for status of queued job, whether it is running yet
 COUNTER=0
@@ -70,7 +70,7 @@ while [ -z "$JOB_URL" ]; do
     echo "Queued job URL: $QUEUED_URL"
     exit 1
   fi
-  JOB_URL=`curl -sSL $CURL_OPTS $QUEUED_URL | jq -r '.executable.url'`
+  JOB_URL=`curl -sSL $CURL_OPTS $JENKINS_AUTH $QUEUED_URL | jq -r '.executable.url'`
   [ "$JOB_URL" = "null" ] && unset JOB_URL
 done
 echo "JOB_URL: $JOB_URL"
@@ -91,19 +91,19 @@ until [ "$IS_BUILDING" = "false" ]; do
     echo "TIME-OUT: Exceeded $BUILD_TIMEOUT_SECONDS seconds"
     break  # Skip entire rest of loop.
   fi
-  IS_BUILDING=`curl -sSL $CURL_OPTS $JOB_URL/api/json | jq -r '.building'`
+  IS_BUILDING=`curl -sSL $CURL_OPTS $JENKINS_AUTH $JOB_URL/api/json | jq -r '.building'`
   # Grab total lines in console output
-  NEW_LINE_CURSOR=`curl -sSL $CURL_OPTS $JOB_URL/consoleText | wc -l`
+  NEW_LINE_CURSOR=`curl -sSL $CURL_OPTS $JENKINS_AUTH $JOB_URL/consoleText | wc -l`
   # subtract line count from cursor
   LINE_COUNT=`expr $NEW_LINE_CURSOR - $OUTPUT_LINE_CURSOR`
   if [ "$LINE_COUNT" -gt 0 ];
   then
-    curl -sSL $JOB_URL/consoleText | tail -$LINE_COUNT
+    curl -sSL $CURL_OPTS $JENKINS_AUTH $JOB_URL/consoleText | tail -$LINE_COUNT
   fi
   OUTPUT_LINE_CURSOR=$NEW_LINE_CURSOR
 done
 
-RESULT=`curl -sSL $CURL_OPTS $JOB_URL/api/json | jq -r '.result'`
+RESULT=`curl -sSL $CURL_OPTS $JENKINS_AUTH $JOB_URL/api/json | jq -r '.result'`
 if [ "$RESULT" = 'SUCCESS' ]
 then
   echo "BUILD RESULT: $RESULT"
